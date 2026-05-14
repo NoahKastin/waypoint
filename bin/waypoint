@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""waypoint - RPG-flavored quest tracker for Claude Code.
+
+Renders Claude-assigned tasks as quests, with allegory-only currencies:
+  XP   - what you got from doing the task (a consolation marker)
+  Rep  - a running count of delivered quests
+  Turf - renders Claude's real 5h rate-limit budget
+  Vice - renders Claude's real weekly rate-limit budget
+
+State persists under ${CLAUDE_PLUGIN_DATA} when run inside Claude Code,
+or ~/.claude/plugins/data/waypoint/ when run standalone.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import uuid
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+DATA_DIR = Path(
+    os.environ.get("CLAUDE_PLUGIN_DATA")
+    or os.environ.get("WAYPOINT_DATA_DIR")
+    or (Path.home() / ".claude" / "plugins" / "data" / "waypoint")
+)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+QUESTS_FILE = DATA_DIR / "quests.json"
+HUBS_FILE = DATA_DIR / "hubs.json"
+CURRENCIES_FILE = DATA_DIR / "currencies.json"
+TURF_FILE = DATA_DIR / "turf.json"
+VICE_FILE = DATA_DIR / "vice.json"
+
+FRICTION_XP = {
+    "trivial": 1,
+    "minor": 3,
+    "moderate": 6,
+    "major": 12,
+    "epic": 25,
+}
+
+# Energy meters that render Claude's real rate-limit budgets, no new mechanics.
+WINDOWS = {
+    "turf": {
+        "file": TURF_FILE, "hours": 5, "responses_per_window": 40,
+        "label": "Turf", "blurb": "Claude's 5h travel budget",
+    },
+    "vice": {
+        "file": VICE_FILE, "days": 7, "responses_per_window": 350,
+        "label": "Vice", "blurb": "Claude's weekly indulgence",
+    },
+}
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def parse_iso(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def load(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return default
+
+
+def save(path: Path, data) -> None:
+    path.write_text(json.dumps(data, indent=2))
+
+
+def quests():
+    return load(QUESTS_FILE, [])
+
+
+def hubs():
+    return load(HUBS_FILE, [])
+
+
+def currencies():
+    return load(CURRENCIES_FILE, {"xp": 0, "quests_completed": 0})
+
+
+def short_id() -> str:
+    return uuid.uuid4().hex[:6]
+
+
+def find_quest(qs, qid_or_prefix):
+    matches = [q for q in qs if q["id"] == qid_or_prefix or q["id"].startswith(qid_or_prefix)]
+    if len(matches) == 1:
+        return matches[0]
+    return matches
+
+
+def ensure_hub(hub_id: str, hub_name: str = "") -> dict:
+    hs = hubs()
+    for h in hs:
+        if h["id"] == hub_id:
+            h["last_visited"] = now_iso()
+            save(HUBS_FILE, hs)
+            return h
+    h = {
+        "id": hub_id,
+        "name": hub_name or hub_id.removeprefix("h-").replace("-", " ").title(),
+        "first_visited": now_iso(),
+        "last_visited": now_iso(),
+    }
+    hs.append(h)
+    save(HUBS_FILE, hs)
+    return h
+
+
+def window_state(name: str):
+    cfg = WINDOWS[name]
+    s = load(cfg["file"], {"window_start": now_iso(), "responses_in_window": 0})
+    try:
+        window_start = parse_iso(s["window_start"])
+    except (KeyError, ValueError):
+        s = {"window_start": now_iso(), "responses_in_window": 0}
+        window_start = parse_iso(s["window_start"])
+    delta = timedelta(hours=cfg.get("hours", 0), days=cfg.get("days", 0))
+    if datetime.now(timezone.utc) - window_start > delta:
+        s = {"window_start": now_iso(), "responses_in_window": 0}
+    return s
+
+
+def window_remaining_pct(name: str, s: dict) -> int:
+    cfg = WINDOWS[name]
+    used = s.get("responses_in_window", 0)
+    remaining = max(0, cfg["responses_per_window"] - used)
+    return int(round((remaining / cfg["responses_per_window"]) * 100))
+
+
+def tick_all():
+    for name, cfg in WINDOWS.items():
+        s = window_state(name)
+        s["responses_in_window"] = s.get("responses_in_window", 0) + 1
+        s["last_response"] = now_iso()
+        save(cfg["file"], s)
+
+
+# ========== quest subcommands ==========
+
+def cmd_quest_add(args):
+    qs = quests()
+    hub = ensure_hub(args.hub or "h-default", args.hub_name or "")
+    friction = args.friction
+    xp = FRICTION_XP[friction]
+    q = {
+        "id": f"q-{short_id()}",
+        "title": args.title,
+        "details": args.details or "",
+        "hub_id": hub["id"],
+        "friction": friction,
+        "xp_reward": xp,
+        "assigned_at": now_iso(),
+        "completed_at": None,
+        "status": "active",
+    }
+    qs.append(q)
+    save(QUESTS_FILE, qs)
+    if args.format == "json":
+        print(json.dumps(q, indent=2))
+    else:
+        print(f"\U0001F4DC New quest assigned: {q['title']}")
+        if q["details"]:
+            print(f"   {q['details']}")
+        print(f"   {friction} · +{xp} XP on completion · from {hub['name']}")
+        print(f"   id: {q['id']}")
+
+
+def cmd_quest_list(args):
+    qs = quests()
+    if args.status == "all":
+        view = qs
+    elif args.status == "completed":
+        view = [q for q in qs if q["status"] == "completed"]
+    else:
+        view = [q for q in qs if q["status"] == "active"]
+    if args.hub:
+        view = [q for q in view if q.get("hub_id", "").startswith(args.hub)]
+    if args.format == "json":
+        print(json.dumps(view, indent=2))
+        return
+    if not view:
+        if args.status == "active":
+            print("✨ No active quests. The road ahead is open.")
+        else:
+            print("(none)")
+        return
+    label = {"active": "Active", "completed": "Completed", "all": "All"}[args.status]
+    print(f"\U0001F4DC {label} quests ({len(view)}):\n")
+    hub_names = {h["id"]: h["name"] for h in hubs()}
+    for q in view:
+        marker = "✓" if q["status"] == "completed" else "·"
+        hub_name = hub_names.get(q.get("hub_id", ""), q.get("hub_id", "?"))
+        print(f"  {marker} [{q['id']}] {q['title']}")
+        if q.get("details"):
+            print(f"       {q['details']}")
+        print(f"       {q['friction']} · +{q['xp_reward']} XP · from {hub_name}")
+        print()
+    if args.status == "active":
+        print("  Done: `waypoint quest done <id>`  ·  Drop: `waypoint quest abandon <id>` (no XP)")
+
+
+def cmd_quest_done(args):
+    qs = quests()
+    match = find_quest(qs, args.id)
+    if not match:
+        print(f"No quest found matching '{args.id}'.", file=sys.stderr)
+        sys.exit(1)
+    if isinstance(match, list):
+        print(f"Ambiguous id '{args.id}'. Matches:", file=sys.stderr)
+        for q in match:
+            print(f"  {q['id']}  {q['title']}", file=sys.stderr)
+        sys.exit(1)
+    if match["status"] == "completed":
+        print(f"Quest [{match['id']}] is already complete.")
+        return
+    match["status"] = "completed"
+    match["completed_at"] = now_iso()
+    save(QUESTS_FILE, qs)
+    c = currencies()
+    c["xp"] = c.get("xp", 0) + match["xp_reward"]
+    c["quests_completed"] = c.get("quests_completed", 0) + 1
+    save(CURRENCIES_FILE, c)
+    print(f"✅ Quest complete: {match['title']}")
+    print(f"   +{match['xp_reward']} XP   (total: {c['xp']})")
+    print(f"   Rep: {c['quests_completed']}")
+
+
+def cmd_quest_abandon(args):
+    qs = quests()
+    match = find_quest(qs, args.id)
+    if not match:
+        print(f"No quest found matching '{args.id}'.", file=sys.stderr)
+        sys.exit(1)
+    if isinstance(match, list):
+        print(f"Ambiguous id '{args.id}'. Matches:", file=sys.stderr)
+        for q in match:
+            print(f"  {q['id']}  {q['title']}", file=sys.stderr)
+        sys.exit(1)
+    match["status"] = "abandoned"
+    match["completed_at"] = now_iso()
+    save(QUESTS_FILE, qs)
+    print(f"Quest [{match['id']}] abandoned. No XP awarded.")
+
+
+# ========== stats ==========
+
+def cmd_stats(args):
+    c = currencies()
+    qs = quests()
+    active_count = sum(1 for q in qs if q["status"] == "active")
+    completed = c.get("quests_completed", 0)
+    xp = c.get("xp", 0)
+    if args.format == "json":
+        out = {
+            "xp": xp,
+            "rep": completed,
+            "quests_active": active_count,
+        }
+        for name in WINDOWS:
+            s = window_state(name)
+            out[f"{name}_pct"] = window_remaining_pct(name, s)
+        print(json.dumps(out, indent=2))
+        return
+    print("⚔️  Adventurer's Stats\n")
+    print(f"   {'XP:':<12}{xp}")
+    print(f"   {'Rep:':<12}{completed}")
+    print(f"   {'Quests:':<12}{active_count} active")
+    for name, cfg in WINDOWS.items():
+        s = window_state(name)
+        pct = window_remaining_pct(name, s)
+        bar_filled = pct // 5
+        bar = "█" * bar_filled + "░" * (20 - bar_filled)
+        print(f"   {cfg['label'] + ':':<12}{pct:3d}%  [{bar}]")
+        print(f"               ({cfg['blurb']})")
+
+
+# ========== hub ==========
+
+def cmd_hub_list(args):
+    hs = hubs()
+    if args.format == "json":
+        print(json.dumps(hs, indent=2))
+        return
+    if not hs:
+        print("\U0001F5FA  No hubs yet. They appear when Claude assigns the first quest.")
+        return
+    qs = quests()
+    print("\U0001F5FA  Quest hubs:\n")
+    for h in hs:
+        active = sum(1 for q in qs if q.get("hub_id") == h["id"] and q["status"] == "active")
+        print(f"  {h['name']}   ({h['id']})")
+        s_plural = "s" if active != 1 else ""
+        print(f"     {active} active quest{s_plural}  ·  last visited {h.get('last_visited', '?')}")
+        print()
+
+
+def cmd_hub_rename(args):
+    hs = hubs()
+    for h in hs:
+        if h["id"] == args.id or h["id"].startswith(args.id):
+            old = h["name"]
+            h["name"] = args.name
+            save(HUBS_FILE, hs)
+            print(f"Renamed hub '{old}' → '{args.name}'.")
+            return
+    print(f"No hub found matching '{args.id}'.", file=sys.stderr)
+    sys.exit(1)
+
+
+def cmd_hub_visit(args):
+    h = ensure_hub(args.id, args.name or "")
+    print(f"\U0001F4CD Arrived at {h['name']} ({h['id']}).")
+
+
+# ========== energy ticks (called by Stop hook) ==========
+
+def cmd_tick(args):
+    tick_all()
+    if args.format == "json":
+        out = {}
+        for name in WINDOWS:
+            s = window_state(name)
+            out[name] = {"remaining_pct": window_remaining_pct(name, s), **s}
+        print(json.dumps(out, indent=2))
+
+
+def cmd_window_show(args):
+    name = args.cmd  # "turf" or "vice"
+    s = window_state(name)
+    pct = window_remaining_pct(name, s)
+    cfg = WINDOWS[name]
+    if args.format == "json":
+        print(json.dumps({"remaining_pct": pct, "state": s}, indent=2))
+        return
+    print(f"{cfg['label']}: {pct}%  ({s.get('responses_in_window', 0)} responses in current window)")
+
+
+# ========== parser ==========
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="waypoint", description="RPG-flavored quest tracker for Claude Code.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    q = sub.add_parser("quest", help="Quest operations")
+    qsub = q.add_subparsers(dest="subcmd", required=True)
+
+    add = qsub.add_parser("add", help="Assign a new quest")
+    add.add_argument("title")
+    add.add_argument("--details", default="")
+    add.add_argument("--hub", default="h-default")
+    add.add_argument("--hub-name", default="")
+    add.add_argument("--friction", choices=list(FRICTION_XP.keys()), default="minor")
+    add.add_argument("--format", choices=["text", "json"], default="text")
+    add.set_defaults(func=cmd_quest_add)
+
+    ls = qsub.add_parser("list", help="List quests")
+    ls.add_argument("--status", choices=["active", "completed", "all"], default="active")
+    ls.add_argument("--hub", default="")
+    ls.add_argument("--format", choices=["text", "json"], default="text")
+    ls.set_defaults(func=cmd_quest_list)
+
+    done = qsub.add_parser("done", help="Mark a quest complete")
+    done.add_argument("id")
+    done.set_defaults(func=cmd_quest_done)
+
+    ab = qsub.add_parser("abandon", help="Abandon a quest (no XP)")
+    ab.add_argument("id")
+    ab.set_defaults(func=cmd_quest_abandon)
+
+    st = sub.add_parser("stats", help="Show XP, Rep, Turf, Vice")
+    st.add_argument("--format", choices=["text", "json"], default="text")
+    st.set_defaults(func=cmd_stats)
+
+    h = sub.add_parser("hub", help="Hub operations")
+    hsub = h.add_subparsers(dest="subcmd", required=True)
+    hl = hsub.add_parser("list", help="List hubs")
+    hl.add_argument("--format", choices=["text", "json"], default="text")
+    hl.set_defaults(func=cmd_hub_list)
+    hr = hsub.add_parser("rename", help="Rename a hub")
+    hr.add_argument("id")
+    hr.add_argument("name")
+    hr.set_defaults(func=cmd_hub_rename)
+    hv = hsub.add_parser("visit", help="Mark arrival at a hub")
+    hv.add_argument("id")
+    hv.add_argument("--name", default="")
+    hv.set_defaults(func=cmd_hub_visit)
+
+    tk = sub.add_parser("tick", help="Tick all energy meters (called by Stop hook)")
+    tk.add_argument("--format", choices=["text", "json"], default="text")
+    tk.set_defaults(func=cmd_tick)
+
+    turf = sub.add_parser("turf", help="Turf operations")
+    tsub = turf.add_subparsers(dest="subcmd", required=True)
+    ts = tsub.add_parser("show", help="Show current Turf")
+    ts.add_argument("--format", choices=["text", "json"], default="text")
+    ts.set_defaults(func=lambda a: cmd_window_show(argparse.Namespace(cmd="turf", format=a.format)))
+
+    prov = sub.add_parser("vice", help="Vice operations")
+    psub = prov.add_subparsers(dest="subcmd", required=True)
+    ps = psub.add_parser("show", help="Show current Vice")
+    ps.add_argument("--format", choices=["text", "json"], default="text")
+    ps.set_defaults(func=lambda a: cmd_window_show(argparse.Namespace(cmd="vice", format=a.format)))
+
+    return p
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

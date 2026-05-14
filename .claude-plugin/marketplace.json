@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "waypoint-local",
+  "description": "Local dev marketplace exposing the waypoint plugin",
+  "owner": {
+    "name": "Noah Kastin"
+  },
+  "plugins": [
+    {
+      "name": "waypoint",
+      "description": "RPG-flavored quest tracker for tasks Claude assigns to you. Renders Claude's existing affordances as XP, Rep, Turf, and Vice.",
+      "author": {
+        "name": "Noah Kastin"
+      },
+      "category": "productivity",
+      "source": "./"
+    }
+  ]
+}

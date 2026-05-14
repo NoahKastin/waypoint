@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "waypoint",
+  "version": "0.1.0",
+  "description": "RPG-flavored quest tracker for tasks Claude assigns to you. Renders Claude's existing affordances as XP, Rep, Turf, and Vice.",
+  "license": "CC-BY-4.0",
+  "author": {
+    "name": "Noah Kastin"
+  },
+  "keywords": ["rpg", "quests", "tasks", "gamification", "productivity"]
+}

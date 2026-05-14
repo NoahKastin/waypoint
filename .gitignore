@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local Claude Code settings (per-user, not for sharing)
+.claude/settings.local.json
+
+# Logs
+*.log
