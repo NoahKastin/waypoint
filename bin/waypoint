@@ -53,6 +53,103 @@ WINDOWS = {
     },
 }
 
+# Pricing-derived weights so cache reads don't dominate the rate-limit proxy.
+# Anthropic pricing ratios (Opus): output 5x input, cache write 1.25x input, cache read 0.1x input.
+TOKEN_WEIGHTS = {
+    "input": 1.0,
+    "cache_creation": 1.25,
+    "cache_read": 0.1,
+    "output": 5.0,
+}
+
+# Effective-token caps per window. Calibrated 2026-05-14 against the maintainer's
+# web-based Claude usage tracker: 3.7M effective ≈ 51% Turf burn → cap ~7.25M;
+# 12.2M effective ≈ 10% Vice burn → cap ~120M. Anthropic's rate-limit weighting isn't
+# published, so re-derive for your own plan via `waypoint usage` next to web /usage,
+# then override with WAYPOINT_TURF_TOKEN_CAP / WAYPOINT_VICE_TOKEN_CAP.
+DEFAULT_TOKEN_CAPS = {
+    "turf": 7_250_000,
+    "vice": 120_000_000,
+}
+
+TRANSCRIPTS_ROOT = Path.home() / ".claude" / "projects"
+
+
+def token_cap(name: str) -> int:
+    override = os.environ.get(f"WAYPOINT_{name.upper()}_TOKEN_CAP")
+    if override:
+        try:
+            v = int(override)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return DEFAULT_TOKEN_CAPS[name]
+
+
+def effective_tokens(t: dict) -> int:
+    return int(
+        t.get("input", 0) * TOKEN_WEIGHTS["input"]
+        + t.get("cache_creation", 0) * TOKEN_WEIGHTS["cache_creation"]
+        + t.get("cache_read", 0) * TOKEN_WEIGHTS["cache_read"]
+        + t.get("output", 0) * TOKEN_WEIGHTS["output"]
+    )
+
+
+def parse_transcripts_in_window(window_start: datetime) -> dict:
+    totals = {
+        "input": 0, "cache_creation": 0, "cache_read": 0, "output": 0,
+        "responses_observed": 0,
+    }
+    if not TRANSCRIPTS_ROOT.exists():
+        totals["effective"] = 0
+        return totals
+    # mtime tolerance: files written just before window_start may still contain in-window lines
+    # due to clock skew / write buffering, so look back 60s.
+    cutoff_epoch = window_start.timestamp() - 60
+    for path in TRANSCRIPTS_ROOT.glob("*/*.jsonl"):
+        try:
+            if path.stat().st_mtime < cutoff_epoch:
+                continue
+        except OSError:
+            continue
+        try:
+            with path.open() as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if obj.get("type") != "assistant":
+                        continue
+                    ts_s = obj.get("timestamp")
+                    if not ts_s:
+                        continue
+                    try:
+                        ts = parse_iso(ts_s)
+                    except ValueError:
+                        continue
+                    if ts < window_start:
+                        continue
+                    usage = (obj.get("message") or {}).get("usage") or {}
+                    totals["input"] += int(usage.get("input_tokens") or 0)
+                    totals["cache_creation"] += int(usage.get("cache_creation_input_tokens") or 0)
+                    totals["cache_read"] += int(usage.get("cache_read_input_tokens") or 0)
+                    totals["output"] += int(usage.get("output_tokens") or 0)
+                    totals["responses_observed"] += 1
+        except OSError:
+            continue
+    totals["effective"] = effective_tokens(totals)
+    return totals
+
+
+def fmt_tokens(n: int) -> str:
+    if n < 1_000:
+        return str(n)
+    if n < 1_000_000:
+        return f"{n / 1_000:.1f}k".replace(".0k", "k")
+    return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -132,6 +229,11 @@ def window_state(name: str):
 
 def window_remaining_pct(name: str, s: dict) -> int:
     cfg = WINDOWS[name]
+    eff = (s.get("tokens_in_window") or {}).get("effective")
+    if eff is not None:
+        cap = token_cap(name)
+        remaining = max(0, cap - eff)
+        return int(round((remaining / cap) * 100))
     used = s.get("responses_in_window", 0)
     remaining = max(0, cfg["responses_per_window"] - used)
     return int(round((remaining / cfg["responses_per_window"]) * 100))
@@ -142,6 +244,13 @@ def tick_all():
         s = window_state(name)
         s["responses_in_window"] = s.get("responses_in_window", 0) + 1
         s["last_response"] = now_iso()
+        try:
+            window_start = parse_iso(s["window_start"])
+            s["tokens_in_window"] = parse_transcripts_in_window(window_start)
+            s["last_token_sample_at"] = now_iso()
+        except Exception:
+            # transcript-scan failure must not break the Stop hook
+            pass
         save(cfg["file"], s)
 
 
@@ -322,14 +431,24 @@ def cmd_stats(args):
     completed = c.get("quests_completed", 0)
     xp = c.get("xp", 0)
     if args.format == "json":
+        windows_out = {}
+        for name in WINDOWS:
+            s = window_state(name)
+            windows_out[name] = {
+                "remaining_pct": window_remaining_pct(name, s),
+                "responses_in_window": s.get("responses_in_window", 0),
+                "tokens_in_window": s.get("tokens_in_window"),
+                "token_cap": token_cap(name),
+                "window_start": s.get("window_start"),
+            }
         out = {
             "xp": xp,
             "rep": completed,
             "quests_active": active_count,
+            "windows": windows_out,
         }
         for name in WINDOWS:
-            s = window_state(name)
-            out[f"{name}_pct"] = window_remaining_pct(name, s)
+            out[f"{name}_pct"] = windows_out[name]["remaining_pct"]
         print(json.dumps(out, indent=2))
         return
     print("⚔️  Adventurer's Stats\n")
@@ -342,7 +461,12 @@ def cmd_stats(args):
         bar_filled = pct // 5
         bar = "█" * bar_filled + "░" * (20 - bar_filled)
         print(f"   {cfg['label'] + ':':<12}{pct:3d}%  [{bar}]")
-        print(f"               ({cfg['blurb']})")
+        eff = (s.get("tokens_in_window") or {}).get("effective")
+        if eff is not None:
+            cap = token_cap(name)
+            print(f"               {fmt_tokens(eff)} / {fmt_tokens(cap)} tokens  ·  {cfg['blurb']}")
+        else:
+            print(f"               ({cfg['blurb']})")
 
 
 # ========== hub ==========
@@ -401,9 +525,67 @@ def cmd_window_show(args):
     pct = window_remaining_pct(name, s)
     cfg = WINDOWS[name]
     if args.format == "json":
-        print(json.dumps({"remaining_pct": pct, "state": s}, indent=2))
+        print(json.dumps({
+            "remaining_pct": pct,
+            "token_cap": token_cap(name),
+            "state": s,
+        }, indent=2))
         return
-    print(f"{cfg['label']}: {pct}%  ({s.get('responses_in_window', 0)} responses in current window)")
+    eff = (s.get("tokens_in_window") or {}).get("effective")
+    responses = s.get("responses_in_window", 0)
+    if eff is not None:
+        cap = token_cap(name)
+        print(f"{cfg['label']}: {pct}%  ({fmt_tokens(eff)} / {fmt_tokens(cap)} tokens, {responses} responses)")
+    else:
+        print(f"{cfg['label']}: {pct}%  ({responses} responses in current window)")
+
+
+def cmd_usage(args):
+    """Detailed per-window token breakdown, computed fresh from transcripts.
+
+    Useful for calibrating WAYPOINT_TURF_TOKEN_CAP / WAYPOINT_VICE_TOKEN_CAP
+    against `/usage` output without waiting for the next Stop hook tick.
+    """
+    out = {}
+    for name, cfg in WINDOWS.items():
+        s = window_state(name)
+        try:
+            window_start = parse_iso(s["window_start"])
+        except (KeyError, ValueError):
+            window_start = datetime.now(timezone.utc)
+        fresh = parse_transcripts_in_window(window_start)
+        cap = token_cap(name)
+        used_pct = int(round((min(fresh["effective"], cap) / cap) * 100)) if cap else 0
+        out[name] = {
+            "window_start": s.get("window_start"),
+            "window_label": (f"{cfg.get('hours')}h" if cfg.get("hours") else f"{cfg.get('days')}d"),
+            "responses_in_window": s.get("responses_in_window", 0),
+            "responses_observed": fresh["responses_observed"],
+            "tokens": {
+                "input": fresh["input"],
+                "cache_creation": fresh["cache_creation"],
+                "cache_read": fresh["cache_read"],
+                "output": fresh["output"],
+                "effective": fresh["effective"],
+            },
+            "token_cap": cap,
+            "used_pct": used_pct,
+            "remaining_pct": max(0, 100 - used_pct),
+        }
+    if args.format == "json":
+        print(json.dumps(out, indent=2))
+        return
+    print("🍞 Token usage (live from transcripts)\n")
+    for name, cfg in WINDOWS.items():
+        d = out[name]
+        t = d["tokens"]
+        print(f"  {cfg['label']} ({d['window_label']} window, since {d['window_start']}):")
+        print(f"     responses (hook ticks): {d['responses_in_window']}   observed in transcripts: {d['responses_observed']}")
+        print(f"     input: {t['input']:,}   cache_creation: {t['cache_creation']:,}   cache_read: {t['cache_read']:,}   output: {t['output']:,}")
+        print(f"     effective: {t['effective']:,} / {d['token_cap']:,}  →  {d['used_pct']}% used, {d['remaining_pct']}% remaining")
+        print()
+    print("  Calibrate via WAYPOINT_TURF_TOKEN_CAP / WAYPOINT_VICE_TOKEN_CAP (effective tokens).")
+    print("  Effective = input + 1.25·cache_creation + 0.1·cache_read + 5·output (Anthropic pricing ratios).")
 
 
 # ========== parser ==========
@@ -470,6 +652,10 @@ def build_parser():
     tk = sub.add_parser("tick", help="Tick all energy meters (called by Stop hook)")
     tk.add_argument("--format", choices=["text", "json"], default="text")
     tk.set_defaults(func=cmd_tick)
+
+    us = sub.add_parser("usage", help="Detailed live token usage per window (calibration)")
+    us.add_argument("--format", choices=["text", "json"], default="text")
+    us.set_defaults(func=cmd_usage)
 
     turf = sub.add_parser("turf", help="Turf operations")
     tsub = turf.add_subparsers(dest="subcmd", required=True)

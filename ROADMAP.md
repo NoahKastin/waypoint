@@ -1,5 +1,23 @@
 # Waypoint Roadmap
 
+## Handoff (2026-05-14)
+
+### Applied this session (2026-05-14)
+- **Real Turf/Vice signal from transcript token usage — shipped.** `bin/waypoint` now scans `~/.claude/projects/*/*.jsonl`, sums per-category `usage` blocks (`input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`) from assistant messages whose `timestamp >= window_start`, and stores the result in `tokens_in_window` inside `turf.json` / `vice.json`. `window_remaining_pct` is now token-based when that field is present; the old `responses_in_window` counter still ticks and is the fallback when no transcripts can be parsed.
+  - **Files filtered by mtime** (with a 60s tolerance) so a 5h scan only touches recent transcripts. Confirmed fast in practice — even the 7d scan walks ~30 files in well under a second on the maintainer's machine.
+  - **Cross-session by design.** Glob covers all project transcripts, not just the current session's, so concurrent Claude Code instances on other projects correctly burn the shared rate-limit budget. Surfaced in `waypoint usage` as `observed in transcripts` vs `responses (hook ticks)` — the ratio is a useful "how multi-session was I" signal.
+  - **Weighted-effective formula** matches Anthropic pricing ratios: `effective = input + 1.25·cache_creation + 0.1·cache_read + 5·output`. Constants in `TOKEN_WEIGHTS`. Picked because rate-limit consumption tracks billable cost more closely than raw token totals (cache reads are nearly free; output is the dominant cost driver).
+- **`waypoint usage` command added** for live, on-demand calibration. Prints per-category token sums, hook-counter vs observed-response counts, effective tokens vs cap, and %used/%remaining for both windows — no state-file writes. JSON output too. This is the calibration tool the user can compare against `/usage` to tune caps.
+- **`waypoint stats` text output now shows tokens** alongside the bar: `<used> / <cap> tokens · <blurb>`. `waypoint turf show` / `vice show` likewise include the token line. JSON stats output gained a `windows` object with full breakdowns; the legacy top-level `turf_pct` / `vice_pct` keys are preserved for any consumers (e.g., a future status-line script).
+- **Defaults: TURF=7.25M, VICE=120M effective tokens — calibrated against Anthropic's web usage tracker** (51% Turf burn at 3.7M effective; 10% Vice burn at 12.2M effective, both observed 2026-05-14). The pricing-weighted formula tracks `/usage` cleanly: after recalibration, Vice matched to the integer percentage. Env overrides (`WAYPOINT_TURF_TOKEN_CAP`, `WAYPOINT_VICE_TOKEN_CAP`) remain for users on different plans.
+
+### Open issues to investigate next session
+1. **Validate calibration over time.** Defaults already match a single web-tracker observation cleanly (Vice to the integer percent). Worth re-checking after a different mix of work — e.g., a long single-session day vs. heavy multi-session — to make sure the weighted formula scales correctly across load shapes rather than just hitting one point. If `/usage` and `waypoint usage` start drifting apart asymmetrically (one window matches, the other doesn't), revisit `TOKEN_WEIGHTS` rather than just rescaling caps. Anthropic's internal rate-limit weighting isn't published, so matching the slope matters more than matching a snapshot.
+2. **Status line Turf surfacing — now unblocked.** Item #3 from the prior handoff was deferred until real signal landed. `waypoint stats --format json` already exposes `turf_pct` at the top level; wire a status line script that reads it and renders a compact `Turf 23%` glyph. Cost: one subprocess per prompt rendering, which means the JSON should stay tiny (currently ~700 bytes — fine).
+3. **Token sample on every read?** Currently `tokens_in_window` is only refreshed by `tick` (Stop hook). Between ticks, `stats` shows the last-tick value, which can be stale if another Claude Code instance is also burning tokens. `waypoint usage` recomputes live as a workaround. Could optionally have `stats` recompute too, but the cost is the same filesystem scan; not worth doing unless the stale-reads become annoying.
+4. **Torch entire hub** (carried from previous handoff): `waypoint hub torch <hub-id> --yes` still unimplemented. Open design question: torch on completed quests — decrement XP/Rep, or leave intact?
+5. **Belt-and-suspenders Stop-hook agent** (carried): still on the table if `assign-quest` / `complete-quest` miss in the wild.
+
 ## Handoff (2026-05-13, evening)
 
 ### Applied this session (2026-05-13 evening)
@@ -16,9 +34,10 @@
 - **Earlier "blocked on harness research" framing in `### Better Turf / Vice` was too pessimistic.** The Stop hook receives JSON on stdin with `transcript_path` pointing at the session JSONL. Each assistant message in the transcript carries a `usage` block (`input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`). Summing those into a `tokens_in_window` counter is tractable, just unimplemented. Updated the Phase 2 section accordingly.
 
 ### Open issues to investigate next session
-1. **Real Turf/Vice signal via transcript parsing — REQUIRED before going public** (per user, 2026-05-13 evening). Path sketched: (a) confirm Stop hook stdin payload shape and verify `transcript_path` JSONL schema, (b) decide on real 5h and weekly token caps for Opus (published or empirically derived), (c) implement `tokens_in_window` alongside the existing `responses_in_window` (keep both during transition for sanity-check), (d) flip `window_remaining_pct` to use tokens. Consider weighting cache-read tokens lower than fresh input tokens, or using a documented effective rate. Until this lands, the displayed values are misleading enough that the user can't trust either meter.
+*(Item #1 below was resolved 2026-05-14 — see top-of-file handoff. Items #2–#4 still open and carried forward.)*
+1. ~~**Real Turf/Vice signal via transcript parsing — REQUIRED before going public**~~ — done 2026-05-14. Transcript scan path took (a) skipped (we glob filesystem instead of relying on stdin `transcript_path`, which catches cross-session usage), (b) defaults chosen empirically and exposed via env vars for tuning, (c) `tokens_in_window` and `responses_in_window` both populated, (d) `window_remaining_pct` flipped to tokens. Cache-read weighting set to 0.1× per Anthropic pricing.
 2. **Torch entire hub** (Hub/quest management): `waypoint hub torch <hub-id> --yes` to bulk-delete a hub and all its quests. Open design call from this session, deferred to next: should torch decrement XP/Rep credit for completed quests being deleted, or leave totals intact ("the work happened")? Proposed default was "leave intact"; user hasn't confirmed.
-3. **Status line Turf surfacing** (Better Turf/Vice): Claude Code's status line API can show live values per-prompt. Wire this up *after* item #1 lands — surfacing a known-wrong heuristic more prominently is worse than not surfacing.
+3. **Status line Turf surfacing** (Better Turf/Vice): now unblocked, see 2026-05-14 Open Issue #2.
 4. **Belt-and-suspenders Stop-hook agent** (discipline): still on the table as a backstop if `assign-quest` / `complete-quest` miss in the wild. No reported misses tonight.
 
 ## Handoff (2026-05-13)
@@ -103,8 +122,8 @@ The whole tracker is a presentation layer over things Claude already does. It ne
 - Probably ASCII first (terminal-renderable); richer rendering later if useful.
 
 ### Better Turf / Vice
-- **Replace the heuristic (responses-per-window) with real signal.** Tractable path identified 2026-05-13 evening: parse `transcript_path` from the Stop hook's stdin JSON, sum per-turn `usage` blocks (input/output/cache tokens) into a `tokens_in_window` counter, compare against real Opus 5h/weekly token caps. Earlier "blocked on harness research" framing was wrong — the signal is available, just unread. **Required before flipping the repo public** (per user, 2026-05-13 evening).
-- Surface remaining Turf in the status line for real-time visibility. Defer until real signal lands — surfacing a known-wrong heuristic more prominently is worse than not surfacing.
+- ~~**Replace the heuristic (responses-per-window) with real signal.**~~ Done 2026-05-14. `bin/waypoint` scans all transcript JSONLs under `~/.claude/projects/`, sums per-message `usage` into `tokens_in_window`, and uses a pricing-derived weighted-effective formula to compute `remaining_pct`. Cross-session by design (account-wide rate limits demand it). Caps are env-tunable (`WAYPOINT_TURF_TOKEN_CAP`, `WAYPOINT_VICE_TOKEN_CAP`); `waypoint usage` is the calibration tool. **Defaults still need real-world calibration against `/usage`** — see 2026-05-14 Open Issue #1.
+- Surface remaining Turf in the status line for real-time visibility — **now unblocked.** `waypoint stats --format json` already exposes `turf_pct` / `vice_pct` at the top level for status-line consumers. See 2026-05-14 Open Issue #2.
 
 ### Stronger quest-assignment / completion discipline
 - Assignment auto-trigger **resolved** (see 2026-05-12 handoff). Completion auto-trigger **built** (see 2026-05-13 handoff) — both use the description-as-behavioral-interrupt pattern: lead with `BEFORE writing X — STOP and do Y`, list explicit phrase triggers, forbid permission-asking explicitly.
