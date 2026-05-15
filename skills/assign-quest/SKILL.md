@@ -23,7 +23,11 @@ Pick by *real-world cost* to the user, not technical complexity:
 - **major** (+12 XP): a phone call, a meeting to schedule, anything the user has likely been avoiding
 - **epic** (+25 XP): multi-step real-world ordeals — dentist scheduling, taxes, moving house
 
+**User signals override your estimate.** If the user names a tier in their message ("this is trivial", "quick lookup", "huge ordeal", "this is an epic") or otherwise telegraphs effort, match it — don't second-guess. The "err high" rule only kicks in when the user *hasn't* signaled.
+
 When unsure, err high. XP is a consolation prize for off-screen work; over-rewarding trivial tasks dilutes the meter.
+
+If you got the tier wrong, the user can recalibrate with `waypoint quest edit <id> --friction <tier>` (or `--xp <n>` to override the reward directly) — including after completion.
 
 ## Hubs
 

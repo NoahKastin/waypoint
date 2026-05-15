@@ -207,6 +207,7 @@ def cmd_quest_list(args):
         print()
     if args.status == "active":
         print("  Done: `waypoint quest done <id>`  ·  Drop: `waypoint quest abandon <id>` (no XP)")
+        print("  Adjust: `waypoint quest edit <id> [--friction|--xp|--title|--details]`")
 
 
 def cmd_quest_done(args):
@@ -250,6 +251,66 @@ def cmd_quest_abandon(args):
     match["completed_at"] = now_iso()
     save(QUESTS_FILE, qs)
     print(f"Quest [{match['id']}] abandoned. No XP awarded.")
+
+
+def cmd_quest_edit(args):
+    qs = quests()
+    match = find_quest(qs, args.id)
+    if not match:
+        print(f"No quest found matching '{args.id}'.", file=sys.stderr)
+        sys.exit(1)
+    if isinstance(match, list):
+        print(f"Ambiguous id '{args.id}'. Matches:", file=sys.stderr)
+        for q in match:
+            print(f"  {q['id']}  {q['title']}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.friction is None and args.xp is None and args.title is None and args.details is None:
+        print("Nothing to edit. Pass at least one of --friction, --xp, --title, --details.", file=sys.stderr)
+        sys.exit(1)
+    if args.xp is not None and args.xp < 0:
+        print(f"--xp must be non-negative (got {args.xp}).", file=sys.stderr)
+        sys.exit(1)
+
+    changes = []
+    old_xp = match["xp_reward"]
+    new_xp = old_xp
+
+    if args.friction is not None:
+        if match["friction"] != args.friction:
+            changes.append(f"friction: {match['friction']} → {args.friction}")
+        match["friction"] = args.friction
+        new_xp = FRICTION_XP[args.friction]
+    if args.xp is not None:
+        new_xp = args.xp
+    if new_xp != old_xp:
+        match["xp_reward"] = new_xp
+        changes.append(f"xp_reward: {old_xp} → {new_xp}")
+    if args.title is not None and args.title != match.get("title"):
+        changes.append(f"title: {match.get('title')!r} → {args.title!r}")
+        match["title"] = args.title
+    if args.details is not None and args.details != match.get("details", ""):
+        changes.append("details updated")
+        match["details"] = args.details
+
+    save(QUESTS_FILE, qs)
+
+    # If already completed, the xp_reward was already paid out; reconcile currencies.
+    if match["status"] == "completed" and new_xp != old_xp:
+        c = currencies()
+        c["xp"] = c.get("xp", 0) + (new_xp - old_xp)
+        save(CURRENCIES_FILE, c)
+        changes.append(f"currencies xp {new_xp - old_xp:+d} (now {c['xp']})")
+
+    if args.format == "json":
+        print(json.dumps(match, indent=2))
+        return
+    if not changes:
+        print(f"Quest [{match['id']}] unchanged (values matched existing).")
+        return
+    print(f"✏️  Quest [{match['id']}] updated:")
+    for ch in changes:
+        print(f"   · {ch}")
 
 
 # ========== stats ==========
@@ -376,6 +437,17 @@ def build_parser():
     ab = qsub.add_parser("abandon", help="Abandon a quest (no XP)")
     ab.add_argument("id")
     ab.set_defaults(func=cmd_quest_abandon)
+
+    ed = qsub.add_parser("edit", help="Edit an existing quest")
+    ed.add_argument("id")
+    ed.add_argument("--friction", choices=list(FRICTION_XP.keys()), default=None,
+                    help="New friction tier; resets xp_reward from the tier table unless --xp also given")
+    ed.add_argument("--xp", type=int, default=None,
+                    help="Override xp_reward directly (wins over --friction's table value)")
+    ed.add_argument("--title", default=None)
+    ed.add_argument("--details", default=None)
+    ed.add_argument("--format", choices=["text", "json"], default="text")
+    ed.set_defaults(func=cmd_quest_edit)
 
     st = sub.add_parser("stats", help="Show XP, Rep, Turf, Vice")
     st.add_argument("--format", choices=["text", "json"], default="text")

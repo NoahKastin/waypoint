@@ -1,5 +1,26 @@
 # Waypoint Roadmap
 
+## Handoff (2026-05-13, evening)
+
+### Applied this session (2026-05-13 evening)
+- **`waypoint quest edit <id> [--friction|--xp|--title|--details]`** — added to `bin/waypoint`. `--friction` recalculates `xp_reward` from `FRICTION_XP`; `--xp` overrides directly and wins over `--friction` if both are passed; `--title` and `--details` are independent. Works on completed quests: when `xp_reward` changes post-completion, delta-adjusts `currencies.json` xp total by `(new - old)` so Rep/XP totals stay consistent. Errors cleanly on no flags, unknown id, ambiguous prefix, negative `--xp`. Surfaced in `waypoint quest list` text footer alongside `done` and `abandon`.
+- **`skills/assign-quest/SKILL.md`** updated: added "**User signals override your estimate**" rule above the existing "err high" line — if the user names a tier in their message ("trivial", "quick", "huge ordeal", "this is an epic"), match it; don't second-guess. Added a one-line pointer to `waypoint quest edit` for after-the-fact recalibration.
+- **Phase 2 strikes:** "Per-quest XP override" / "Friction calibration" entries marked done in both `### Hub/quest management gaps` and `### Other ideas`.
+- **Field-tested edit:** retiered q-8c2cb5 (minor → trivial), then `quest done` — +1 XP credited correctly instead of +3.
+
+### Diagnosed: Turf/Vice display vs reality gap (not yet fixed)
+- User observed Turf showing ~30% remaining when `/usage` says ~15% remaining (real ~85% burned vs heuristic ~70%), and Vice showing ~90% remaining when real is ~94% (real ~6% burned vs heuristic ~10%). Two gaps in opposite directions.
+- **Root cause:** Waypoint never read real rate-limit signal. The Stop hook ticks `responses_in_window += 1` per response and divides by hardcoded thresholds (`responses_per_window`: 40 for Turf/5h, 350 for Vice/7d). Real Claude rate limits are *token-based*, not response-based.
+- **Why gap widens over a session:** Opus 4.7 with thinking + tool calls consumes tokens that vary wildly per response (long context, cache reads, tool output). Early in a session per-response cost is moderate so the heuristic tracks reality; as the conversation grows, real burn accelerates while the heuristic stays linear. Matches the user's observation that it "felt more accurate earlier tonight."
+- **Why opposite directions:** The 40-per-5h threshold is too high (the real 5h cap fits fewer heavy Opus responses), so Turf under-burns in the heuristic. The 350-per-7d threshold is too low (the real weekly cap supports more responses), so Vice over-burns in the heuristic.
+- **Earlier "blocked on harness research" framing in `### Better Turf / Vice` was too pessimistic.** The Stop hook receives JSON on stdin with `transcript_path` pointing at the session JSONL. Each assistant message in the transcript carries a `usage` block (`input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`). Summing those into a `tokens_in_window` counter is tractable, just unimplemented. Updated the Phase 2 section accordingly.
+
+### Open issues to investigate next session
+1. **Real Turf/Vice signal via transcript parsing — REQUIRED before going public** (per user, 2026-05-13 evening). Path sketched: (a) confirm Stop hook stdin payload shape and verify `transcript_path` JSONL schema, (b) decide on real 5h and weekly token caps for Opus (published or empirically derived), (c) implement `tokens_in_window` alongside the existing `responses_in_window` (keep both during transition for sanity-check), (d) flip `window_remaining_pct` to use tokens. Consider weighting cache-read tokens lower than fresh input tokens, or using a documented effective rate. Until this lands, the displayed values are misleading enough that the user can't trust either meter.
+2. **Torch entire hub** (Hub/quest management): `waypoint hub torch <hub-id> --yes` to bulk-delete a hub and all its quests. Open design call from this session, deferred to next: should torch decrement XP/Rep credit for completed quests being deleted, or leave totals intact ("the work happened")? Proposed default was "leave intact"; user hasn't confirmed.
+3. **Status line Turf surfacing** (Better Turf/Vice): Claude Code's status line API can show live values per-prompt. Wire this up *after* item #1 lands — surfacing a known-wrong heuristic more prominently is worse than not surfacing.
+4. **Belt-and-suspenders Stop-hook agent** (discipline): still on the table as a backstop if `assign-quest` / `complete-quest` miss in the wild. No reported misses tonight.
+
 ## Handoff (2026-05-13)
 
 ### Applied this session (2026-05-13)
@@ -82,8 +103,8 @@ The whole tracker is a presentation layer over things Claude already does. It ne
 - Probably ASCII first (terminal-renderable); richer rendering later if useful.
 
 ### Better Turf / Vice
-- Replace the heuristic (responses-per-window) with real signal from `/usage` / `/context` / status line metrics — once we know what the harness actually exposes to plugin scripts.
-- Surface remaining Turf in the status line for real-time visibility.
+- **Replace the heuristic (responses-per-window) with real signal.** Tractable path identified 2026-05-13 evening: parse `transcript_path` from the Stop hook's stdin JSON, sum per-turn `usage` blocks (input/output/cache tokens) into a `tokens_in_window` counter, compare against real Opus 5h/weekly token caps. Earlier "blocked on harness research" framing was wrong — the signal is available, just unread. **Required before flipping the repo public** (per user, 2026-05-13 evening).
+- Surface remaining Turf in the status line for real-time visibility. Defer until real signal lands — surfacing a known-wrong heuristic more prominently is worse than not surfacing.
 
 ### Stronger quest-assignment / completion discipline
 - Assignment auto-trigger **resolved** (see 2026-05-12 handoff). Completion auto-trigger **built** (see 2026-05-13 handoff) — both use the description-as-behavioral-interrupt pattern: lead with `BEFORE writing X — STOP and do Y`, list explicit phrase triggers, forbid permission-asking explicitly.
@@ -91,10 +112,10 @@ The whole tracker is a presentation layer over things Claude already does. It ne
 
 ### Hub/quest management gaps
 - **Torch entire hub**: bulk-delete a hub and all its quests in one move, for the case where the user has decided every item in the hub is a no-go. Distinct from per-quest abandon (which already exists as `waypoint quest abandon <id>`).
-- **Per-quest XP override**: let the user adjust `xp_reward` on an existing quest after-the-fact (including down to 0), so "I did it but it doesn't deserve full credit" or "Claude under-estimated friction" both have a clean path. This is the same surface as the existing **Friction calibration** idea below; merge them when implemented.
+- ~~**Per-quest XP override** / **Friction calibration**~~ — done 2026-05-13: `waypoint quest edit <id> [--friction|--xp|--title|--details]`. `--friction` recalculates `xp_reward` from the tier table; `--xp` overrides directly (wins over `--friction`); both work on completed quests and delta-adjust the currencies total. `skills/assign-quest/SKILL.md` was also updated to respect explicit user friction signals ("trivial", "quick", "epic") instead of always erring high.
 - ~~**Surface `quest abandon` in help/docs**~~ — done 2026-05-13: `waypoint quest list` text output now prints a one-line footer with both `done` and `abandon` commands.
 
 ### Other ideas
 - Recurring quests (dailies/weeklies)
-- Friction calibration: let the user override Claude's friction estimate after the fact, so XP rewards converge on what felt accurate. (Overlaps with per-quest XP override above.)
+- ~~Friction calibration~~ — done 2026-05-13, see resolved item above.
 - Export/import quest log (markdown for journaling, JSON for tooling)
