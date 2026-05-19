@@ -1,9 +1,11 @@
 ---
-description: BEFORE writing any sentence telling the user to do something off-screen — "you should look up X", "go check Y", "call Z", "the next step for you is...", "you'll need to email...", "try doing X" — STOP and log it as a quest via `waypoint quest add`. Log automatically; never ask "want me to log this?" — the user opted in by installing the plugin. Off-screen instructions buried in prose are the antipattern this skill prevents: every "you should..." that isn't a logged quest is a dropped task. TRIGGER on any draft sentence directing the user to a phone call, lookup, schedule/calendar action, errand, web search, reading, or decision requiring outside info.
+description: BEFORE writing any output that directs the user to do something off-screen — inline prose ("you should look up X", "go check Y", "call Z", "you'll need to email...") OR imperative items in a structured plan ("## Next steps" sections, "**Pick contacts to forward to**" bullets, numbered "This week:" lists) — STOP and log it as a quest via `waypoint quest add`. One quest per actionable item, not one per response: a 10-bullet next-steps section is 10 `quest add` calls before you write it. Deliverable wrap-ups are where this is easiest to forget — fight harder there. Log automatically; never ask "want me to log this?" — the user opted in by installing the plugin. TRIGGER on phone calls, lookups, schedule/calendar actions, errands, web searches, readings, reach-outs, decisions requiring outside info — whether the surface form is a sentence, a bullet, or a section header.
 allowed-tools: Bash(waypoint quest add *)
 ---
 
 When you would otherwise tell the user "you should…", "please look up…", "go check…", "try doing X", "see if you can find Y" — *first* record it as a quest, then mention briefly in your response.
+
+**Structured plans count.** A "## Next steps" section with imperative bullets ("**Pick contacts to forward to**", "**Post on Partiful + Tribester**", "**Decide on rain backup**") is the same antipattern as inline "you should..." prose. Each bullet is a separate quest. If you're about to write an 8-item action list, that's 8 `waypoint quest add` calls *before* the list — not afterwards, not zero. Deliverable wrap-up is where this fails most often; treat the urge to "just write the deliverable" as the cue to fire the skill.
 
 ## How
 

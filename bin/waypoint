@@ -42,9 +42,13 @@ FRICTION_XP = {
 }
 
 # Energy meters that render Claude's real rate-limit budgets, no new mechanics.
+# `rolling`: window slides continuously (always the last N hours/days), matching
+# Anthropic's rolling rate-limit semantics. Without it, the window is a fixed
+# bucket that resets every N hours/days and starts from zero — which can sit
+# wildly out of phase with the real limit until the next reset.
 WINDOWS = {
     "turf": {
-        "file": TURF_FILE, "hours": 5, "responses_per_window": 40,
+        "file": TURF_FILE, "hours": 5, "responses_per_window": 40, "rolling": True,
         "label": "Turf", "blurb": "Claude's 5h travel budget",
     },
     "vice": {
@@ -62,14 +66,14 @@ TOKEN_WEIGHTS = {
     "output": 5.0,
 }
 
-# Effective-token caps per window. Calibrated 2026-05-14 against the maintainer's
-# web-based Claude usage tracker: 3.7M effective ≈ 51% Turf burn → cap ~7.25M;
-# 12.2M effective ≈ 10% Vice burn → cap ~120M. Anthropic's rate-limit weighting isn't
-# published, so re-derive for your own plan via `waypoint usage` next to web /usage,
-# then override with WAYPOINT_TURF_TOKEN_CAP / WAYPOINT_VICE_TOKEN_CAP.
+# Effective-token caps per window. Calibrated against the maintainer's web-based
+# Claude usage tracker: Turf 7.25M (3.7M ≈ 51% burn, 2026-05-14); Vice 170M
+# (15.27M ≈ 9% burn, 2026-05-18). Anthropic's rate-limit weighting isn't published,
+# so re-derive for your own plan via `waypoint usage` next to web /usage, then
+# override with WAYPOINT_TURF_TOKEN_CAP / WAYPOINT_VICE_TOKEN_CAP.
 DEFAULT_TOKEN_CAPS = {
     "turf": 7_250_000,
-    "vice": 120_000_000,
+    "vice": 170_000_000,
 }
 
 TRANSCRIPTS_ROOT = Path.home() / ".claude" / "projects"
@@ -215,13 +219,24 @@ def ensure_hub(hub_id: str, hub_name: str = "") -> dict:
 
 def window_state(name: str):
     cfg = WINDOWS[name]
+    delta = timedelta(hours=cfg.get("hours", 0), days=cfg.get("days", 0))
+    if cfg.get("rolling"):
+        # Rescan transcripts on every read so the window edges match wall-clock now.
+        # No file persistence: transcripts are the source of truth.
+        window_start = datetime.now(timezone.utc) - delta
+        tokens = parse_transcripts_in_window(window_start)
+        return {
+            "window_start": window_start.isoformat(timespec="seconds"),
+            "tokens_in_window": tokens,
+            "responses_in_window": tokens.get("responses_observed", 0),
+            "last_token_sample_at": now_iso(),
+        }
     s = load(cfg["file"], {"window_start": now_iso(), "responses_in_window": 0})
     try:
         window_start = parse_iso(s["window_start"])
     except (KeyError, ValueError):
         s = {"window_start": now_iso(), "responses_in_window": 0}
         window_start = parse_iso(s["window_start"])
-    delta = timedelta(hours=cfg.get("hours", 0), days=cfg.get("days", 0))
     if datetime.now(timezone.utc) - window_start > delta:
         s = {"window_start": now_iso(), "responses_in_window": 0}
     return s
@@ -241,6 +256,8 @@ def window_remaining_pct(name: str, s: dict) -> int:
 
 def tick_all():
     for name, cfg in WINDOWS.items():
+        if cfg.get("rolling"):
+            continue  # rolling windows derive everything from transcripts on read
         s = window_state(name)
         s["responses_in_window"] = s.get("responses_in_window", 0) + 1
         s["last_response"] = now_iso()
@@ -487,6 +504,8 @@ def cmd_hub_list(args):
         s_plural = "s" if active != 1 else ""
         print(f"     {active} active quest{s_plural}  ·  last visited {h.get('last_visited', '?')}")
         print()
+    print("  Rename: `waypoint hub rename <id> <new-name>`  ·  Visit: `waypoint hub visit <id>`")
+    print("  Torch:  `waypoint hub torch <id>`  (deletes active quests + hub; settled history preserved)")
 
 
 def cmd_hub_rename(args):
@@ -505,6 +524,51 @@ def cmd_hub_rename(args):
 def cmd_hub_visit(args):
     h = ensure_hub(args.id, args.name or "")
     print(f"\U0001F4CD Arrived at {h['name']} ({h['id']}).")
+
+
+def cmd_hub_torch(args):
+    hs = hubs()
+    matches = [h for h in hs if h["id"] == args.id or h["id"].startswith(args.id)]
+    if not matches:
+        print(f"No hub found matching '{args.id}'.", file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"Ambiguous hub id '{args.id}'. Matches:", file=sys.stderr)
+        for h in matches:
+            print(f"  {h['id']}  {h['name']}", file=sys.stderr)
+        sys.exit(1)
+    hub = matches[0]
+
+    qs = quests()
+    in_hub = [q for q in qs if q.get("hub_id") == hub["id"]]
+    active = [q for q in in_hub if q["status"] == "active"]
+    settled = [q for q in in_hub if q["status"] != "active"]
+
+    if not args.yes:
+        print(f"\U0001F525 About to torch hub '{hub['name']}' ({hub['id']}):")
+        print(f"   {len(active)} active quest(s) → deleted")
+        if settled:
+            print(f"   {len(settled)} settled quest record(s) (completed/abandoned) → preserved, orphaned")
+        print(f"   Hub entry → removed")
+        print(f"   Rep / XP counter → unaffected")
+        try:
+            ans = input("Continue? [y/N] ").strip().lower()
+        except EOFError:
+            ans = ""
+        if ans not in ("y", "yes"):
+            print("Cancelled.")
+            return
+
+    qs_after = [q for q in qs if not (q.get("hub_id") == hub["id"] and q["status"] == "active")]
+    save(QUESTS_FILE, qs_after)
+    hs_after = [h for h in hs if h["id"] != hub["id"]]
+    save(HUBS_FILE, hs_after)
+
+    print(f"\U0001F525 Torched hub '{hub['name']}'.")
+    print(f"   Deleted: {len(active)} active quest(s)")
+    if settled:
+        print(f"   Preserved: {len(settled)} historical record(s) (orphaned; visible in `quest list --status all`)")
+    print(f"   Hub entry removed.")
 
 
 # ========== energy ticks (called by Stop hook) ==========
@@ -648,6 +712,10 @@ def build_parser():
     hv.add_argument("id")
     hv.add_argument("--name", default="")
     hv.set_defaults(func=cmd_hub_visit)
+    ht = hsub.add_parser("torch", help="Torch a hub: delete active quests, orphan settled history, remove hub")
+    ht.add_argument("id")
+    ht.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    ht.set_defaults(func=cmd_hub_torch)
 
     tk = sub.add_parser("tick", help="Tick all energy meters (called by Stop hook)")
     tk.add_argument("--format", choices=["text", "json"], default="text")
