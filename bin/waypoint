@@ -52,7 +52,7 @@ WINDOWS = {
         "label": "Turf", "blurb": "Claude's 5h travel budget",
     },
     "vice": {
-        "file": VICE_FILE, "days": 7, "responses_per_window": 350,
+        "file": VICE_FILE, "days": 7, "responses_per_window": 350, "rolling": True,
         "label": "Vice", "blurb": "Claude's weekly indulgence",
     },
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "waypoint-local",
-  "description": "Local dev marketplace exposing the waypoint plugin",
+  "name": "waypoint",
+  "description": "Marketplace for the Waypoint plugin — an RPG-flavored quest tracker for Claude Code.",
   "owner": {
     "name": "Noah Kastin"
   },

@@ -25,21 +25,31 @@ The whole tracker is a presentation layer over things Claude already does. It ne
 - `/map` — view or rename quest hubs (anticipates the Phase 2 visual map)
 - `assign-quest` skill — nudges Claude to record off-screen tasks as quests instead of burying them in prose
 - `complete-quest` skill — auto-completes a quest when the user reports finishing it ("I did it", "done with X", etc.) so the user doesn't need to remember the id
-- `Stop` hook — ticks Turf + Vice after each Claude response
+- `Stop` hook — per-response heartbeat, reserved for Phase 2 status-line surfacing
 
 Phase 2 (deferred): visual map (quest icons placed at their originating hub), more accurate energy meters, stronger assignment discipline. See `ROADMAP.md`.
 
-## Install (dev)
+## Install
 
-This plugin isn't published to a marketplace yet. To run it during development:
+Waypoint's repo doubles as its plugin marketplace, so installing it takes two commands inside Claude Code:
 
-```bash
-claude --plugin-dir /Users/noahkastin/Documents/Programming/waypoint
+```
+/plugin marketplace add NoahKastin/waypoint
+/plugin install waypoint@waypoint
 ```
 
-That loads Waypoint for the duration of the session. The `waypoint` CLI gets added to your PATH automatically.
+The first registers this repo as a marketplace; the second installs the plugin from it. The `waypoint` CLI is added to your PATH automatically, and the `assign-quest` / `complete-quest` skills activate on your next session. To update later, re-run `/plugin install waypoint@waypoint` or use the `/plugin` menu.
 
-To make it permanent, add the plugin to a marketplace (a git repo with a `.claude-plugin/marketplace.json`) and install via `claude plugin install waypoint@<your-marketplace>`.
+### Local development
+
+To hack on Waypoint from a clone without installing it:
+
+```bash
+git clone https://github.com/NoahKastin/waypoint
+claude --plugin-dir waypoint
+```
+
+That loads it for the duration of the session.
 
 ## State
 
@@ -48,8 +58,8 @@ Quest state lives at `~/.claude/plugins/data/waypoint/` and persists across plug
 - `quests.json` — active + completed quests
 - `hubs.json` — known hubs (questgivers)
 - `currencies.json` — XP total, completed-quest count
-- `turf.json` — current 5h-window response count
-- `vice.json` — current weekly-window response count
+
+Turf and Vice aren't stored here. They're derived live from your local Claude Code transcripts (`~/.claude/projects/*/*.jsonl`) on each read, summing token usage over the trailing 5-hour and 7-day windows. Nothing is written for them, and nothing ever leaves your machine. A `Stop` hook pings after each response as a heartbeat for future status-line surfacing, but the meters no longer depend on it.
 
 ## Direct CLI usage
 
@@ -69,9 +79,15 @@ waypoint vice show             # check Vice alone
 
 Run `waypoint --help` to see all commands.
 
+## Acknowledgments
+
+Waypoint's vocabulary — XP, Rep, Turf, Vice, quests, and the crew-and-hub framing — is an affectionate nod to *Blades in the Dark*.
+
+> This work is based on [Blades in the Dark](https://bladesinthedark.com), product of One Seven Design, developed and authored by John Harper, and licensed for our use under the [Creative Commons Attribution 3.0 Unported license](https://creativecommons.org/licenses/by/3.0/).
+
 ## License
 
-Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). See `LICENSE`.
+© 2026 Noah Kastin. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). See `LICENSE`.
 
 ## Author
 

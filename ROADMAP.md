@@ -1,5 +1,13 @@
 # Waypoint Roadmap
 
+## Current state (2026-06-05)
+
+The dated handoff entries below are historical; some predate the pre-public polish and reference the old `waypoint-local` marketplace name and pre-rename data paths. Where they conflict with this section, this section wins.
+
+- **Marketplace name is now `waypoint`** (renamed from `waypoint-local`). Install: `/plugin marketplace add NoahKastin/waypoint`, then `/plugin install waypoint@waypoint`.
+- **Data path is `~/.claude/plugins/data/waypoint/`** (un-namespaced), overridable via `WAYPOINT_DATA_DIR`. The Stop hook `unset`s `CLAUDE_PLUGIN_DATA` so hook and skill/CLI writes converge here. The "marketplace-data migration" worry in the 2026-05-12/13 handoffs is **moot** — the path is un-namespaced by design, so renaming the marketplace did not orphan data.
+- **Turf and Vice are both rolling windows**, computed live from transcripts on read (no persisted `turf.json` / `vice.json`). The Stop hook's `tick` is therefore a no-op heartbeat, kept only as the hook-point for the Phase 2 status line. The 2026-05-12 "stale fallback log line" item is resolved, and the hook's debug trace is now opt-in via `WAYPOINT_DEBUG`.
+
 ## Handoff (2026-05-14)
 
 ### Applied this session (2026-05-14)
@@ -61,7 +69,7 @@
   - Registered + installed: `claude plugin marketplace add /…/waypoint && claude plugin install waypoint@waypoint-local`. Hook now fires on `Stop`, `tick` exits 0, `turf.json` writes correctly.
   - Findings worth knowing for future work:
     - `CLAUDE_PLUGIN_ROOT` resolves to the **source repo path** (the marketplace's directory source), not the `~/.claude/plugins/cache/...` snapshot — so live edits to the repo take effect without `plugin update`.
-    - `CLAUDE_PLUGIN_DATA` is namespaced as `<plugin>-<marketplace>` → currently `waypoint-waypoint-local`. Renaming the marketplace (or publishing to a real one) will orphan existing data; plan a one-time migration when distribution lands.
+    - `CLAUDE_PLUGIN_DATA` is namespaced as `<plugin>-<marketplace>` → was `waypoint-waypoint-local` under the old marketplace name. **(Superseded — see Current state: the hook unsets `CLAUDE_PLUGIN_DATA`, so the live data path is un-namespaced and renaming the marketplace did not orphan data.)**
     - Orphaned data dirs from prior `--plugin-dir` sessions: `~/.claude/plugins/data/waypoint/` and `~/.claude/plugins/data/waypoint-inline/` (last touched 2026-05-10, pre-rename). Note: `waypoint/` is currently NOT safe to delete — see Open issues #1 below.
     - The wrapper's "fallback" log line (`$HOME/.claude/plugins/data/waypoint/turf.json`) now always points at a stale path. Cosmetic; remove next time `bin/waypoint-stop-hook.sh` is touched.
 - **Issue #2 (`assign-quest` didn't auto-trigger) — root cause was wrong; new cause identified and resolved.** Falsified the Haiku hypothesis: Opus also failed to auto-invoke the skill with the old description. Real cause: description was a "use this when X" statement, not a behavioral interrupt. Rewrote the `description:` field to lead with `BEFORE writing any sentence telling the user to do something off-screen — STOP and log it as a quest...` plus explicit phrase triggers ("you should look up X", "go check Y", "call Z", etc.). First rewrite made Opus *aware* but it asked permission ("Want me to log this?") instead of auto-logging — added `Log automatically; never ask "want me to log this?" — the user opted in by installing the plugin.` Now fires reliably on Opus with auto-log behavior. Cost: `assign-quest` always-on tokens went ~110 → ~250.
