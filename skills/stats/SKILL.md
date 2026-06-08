@@ -1,6 +1,6 @@
 ---
 name: tracks
-description: Show the user's adventurer stats — XP, Rep, Turf, Vice, and quest counts.
+description: Check your own adventurer's tracks — XP, Rep, Turf, Vice, and quest counts — as if pausing in town at a Waypoint to take stock. (Your stats, not a Waypoint's.)
 allowed-tools: Bash(waypoint stats*)
 ---
 

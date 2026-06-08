@@ -12,7 +12,7 @@ Each in-game element renders an existing Claude affordance rather than introduci
 - **Rep** renders the running count of quests you've delivered — a *number*, not a behavioral directive. Claude's actual relationship-evolution is something its memory already does naturally.
 - **Turf** renders Claude's real 5-hour rate-limit budget — an existing constraint made legible as in-world travel cost, not imposing a new gate.
 - **Vice** renders Claude's real weekly rate-limit budget — same idea as Turf, longer cycle.
-- **Quest hubs** render persistent conversation contexts as in-world locations Claude assigns quests *from*.
+- **Waypoints** render persistent conversation contexts as in-world locations Claude assigns quests *from*. A Waypoint with active quests is a **hub** (a questgiver); clear its last quest and it stays on the map as a dormant Waypoint you can travel back to and relight with new quests.
 
 The whole tracker is a presentation layer over things Claude already does. It never changes Claude's actual behavior — only its framing.
 
@@ -21,8 +21,8 @@ The whole tracker is a presentation layer over things Claude already does. It ne
 - `/quest-log` — list active quests
 - `/quest-done <id>` — mark a quest complete, get XP, advance Rep
 - `/quest-add <title>` — manually log a quest
-- `/tracks` — view XP, Rep, Turf, Vice, quest counts
-- `/map` — view or rename quest hubs (anticipates the Phase 2 visual map)
+- `/tracks` — take stock of your own tracks (XP, Rep, Turf, Vice, quest counts), as if pausing in town at a Waypoint
+- `/map` — view your Waypoints (active hubs + dormant ones), rename, visit, or torch them (anticipates the Phase 2 visual map)
 - `assign-quest` skill — nudges Claude to record off-screen tasks as quests instead of burying them in prose
 - `complete-quest` skill — auto-completes a quest when the user reports finishing it ("I did it", "done with X", etc.) so the user doesn't need to remember the id
 - `Stop` hook — per-response heartbeat, reserved for Phase 2 status-line surfacing
@@ -70,8 +70,10 @@ waypoint quest add "Find the population of Marfa, TX" --hub h-events --hub-name 
 waypoint quest list
 waypoint quest done q-abc123
 waypoint stats
-waypoint hub list
-waypoint hub rename h-life "Real Life"
+waypoint map                   # your Waypoints (lit hubs + dormant)
+waypoint rename h-life "Real Life"
+waypoint visit h-life
+waypoint torch h-old           # forget a Waypoint for good (its active quests too)
 waypoint tick                  # advances both energy meters
 waypoint turf show             # check Turf alone
 waypoint vice show             # check Vice alone

@@ -8,6 +8,19 @@ The dated handoff entries below are historical; some predate the pre-public poli
 - **Data path is `~/.claude/plugins/data/waypoint/`** (un-namespaced), overridable via `WAYPOINT_DATA_DIR`. The Stop hook `unset`s `CLAUDE_PLUGIN_DATA` so hook and skill/CLI writes converge here. The "marketplace-data migration" worry in the 2026-05-12/13 handoffs is **moot** — the path is un-namespaced by design, so renaming the marketplace did not orphan data.
 - **Turf and Vice are both rolling windows**, computed live from transcripts on read (no persisted `turf.json` / `vice.json`). The Stop hook's `tick` is therefore a no-op heartbeat, kept only as the hook-point for the Phase 2 status line. The 2026-05-12 "stale fallback log line" item is resolved, and the hook's debug trace is now opt-in via `WAYPOINT_DEBUG`.
 
+## Handoff (2026-06-06)
+
+### Applied this session (2026-06-06)
+- **Hub/Waypoint split shipped — lit vs. dormant.** Resolved the long-standing "are hubs and Waypoints the same thing?" question: they are now two *states of one node*, not synonyms. A **hub** is a Waypoint with ≥1 active quest (rendered lit ● under "Active hubs"); when its last quest is settled it becomes a **dormant Waypoint** (○), stays on the map, and re-lights automatically when a new quest is assigned to its `hub_id`. Chosen behavior: **dim, don't delete** (picked over hide-from-list and delete-on-empty/auto-torch). Key realization: the data layer was *already* persistent (`quest done` never touched `hubs.json`; `ensure_hub` find-or-creates), so this was a vocabulary + presentation change, not a data rewrite.
+  - `bin/waypoint`: added `hub_counts(hub_id, qs)` helper; `cmd_hub_list` groups lit vs. dormant and emits `state`/`active_count`/`cleared_count` in `--format json` (the field the Phase 2 map should render from). `cmd_hub_visit` reports node state on arrival.
+  - Docs: `README.md` design principle restored the Waypoint/hub distinction; `skills/hub/SKILL.md` description updated.
+- **CLI surface flattened — `hub` group dissolved.** Every Waypoint verb is now top-level: `waypoint map` (was `hub list`), `waypoint rename`, `waypoint visit`, `waypoint torch` (was `hub torch`). Each acts on a Waypoint by id, so the `hub` sub-group was redundant; `waypoint map` also matches the `/map` slash. Functions renamed `cmd_hub_*` → `cmd_map`/`cmd_rename`/`cmd_visit`/`cmd_torch`. The `/map` slash still dispatches all of them (`/map`, `/map rename …`, `/map visit …`, `/map torch …`) and its `allowed-tools` was updated. Internal data model unchanged (`hubs.json`, quest `hub_id`, `quest add --hub/--hub-name` all stay).
+- **`waypoint stats` flavor — "in town at a Waypoint."** Disambiguates "your own adventurer sheet" from "stats of a Waypoint node." Output leads with `Your Adventurer's Stats` + a "You pause at a Waypoint to take stock of your own tracks." line; the `stats` subcommand help and the `/tracks` skill/README copy reinforce it.
+- **Standalone `/torch` slash added** (`skills/torch/SKILL.md`) — a direct entry for the now-top-level `waypoint torch`; runs `waypoint torch <id> --yes`, and with no id falls back to `waypoint map` + asking which to torch. `/map torch` still works too. (Resolved the deferred `/torch?` question.)
+
+### Open issues to investigate next session
+1. **See the dormant/relight cycle on real data.** As of this session every live hub had active quests (no dormant section yet). First natural test: when a hub's last quest is completed, confirm it drops into "Dormant Waypoints" and re-lights on the next assignment.
+
 ## Handoff (2026-05-14)
 
 ### Applied this session (2026-05-14)
@@ -116,7 +129,7 @@ Each in-game element renders an existing Claude affordance rather than introduci
 - **Rep** renders the running count of delivered quests — a number, not a behavioral directive. Claude's actual relationship-evolution is something its memory already does naturally.
 - **Turf** renders Claude's real 5-hour rate-limit budget.
 - **Vice** renders Claude's real weekly rate-limit budget.
-- **Waypoints (quest hubs)** render persistent conversation contexts as in-world locations Claude assigns quests *from*.
+- **Waypoints** render persistent conversation contexts as in-world locations Claude assigns quests *from*. A Waypoint with active quests is a **hub** (a questgiver); clear its last quest and it stays on the map as a dormant Waypoint, re-lit when a new quest lands there.
 
 The whole tracker is a presentation layer over things Claude already does. It never changes Claude's actual behavior — only its framing.
 
@@ -124,6 +137,7 @@ The whole tracker is a presentation layer over things Claude already does. It ne
 
 ### Visual map
 - Render Waypoints as nodes on a map; render active quests as icons *next to their originating Waypoint* (not at any destination), since quests have no "do here" location — only a "given from" location. Placement-near-questgiver aids user memory.
+  - **Lit vs. dormant:** render the two states distinctly (lit hubs highlighted, dormant Waypoints dimmed). `waypoint hub list --format json` now emits `state` ("lit"|"dormant"), `active_count`, and `cleared_count` per node — read those rather than recomputing.
 - Artstyle: Diablo waypoint nodes + BitD grimy hand-drawn vibe.
 - Renamable Waypoints/quests (rename already supported in CLI; the map UI is what's new).
 - **Token discipline (load-bearing):** the map should cost as close to zero conversation tokens as possible. The CLI does the drawing — Claude never generates the map glyph-by-glyph in chat. Preferred shape: `waypoint map` writes/refreshes a file (e.g., `${CLAUDE_PLUGIN_DATA}/map.png` or `map.txt`) and prints only a one-line "Map updated → <path>" pointer, which is what Claude relays to the user. If ASCII is the chosen format, keep the canvas small enough that displaying it costs no more than a short paragraph; otherwise prefer image output and a path link. This rules out approaches that have Claude assemble or restate the map each turn.

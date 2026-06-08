@@ -217,6 +217,18 @@ def ensure_hub(hub_id: str, hub_name: str = "") -> dict:
     return h
 
 
+def hub_counts(hub_id: str, qs) -> tuple:
+    """(active, cleared) quest counts for a hub.
+
+    active > 0 means the node is lit -- a hub currently giving quests.
+    active == 0 means it is a dormant Waypoint: cleared out, still on the
+    map, and re-lit automatically the next time a quest is assigned to it.
+    """
+    active = sum(1 for q in qs if q.get("hub_id") == hub_id and q["status"] == "active")
+    cleared = sum(1 for q in qs if q.get("hub_id") == hub_id and q["status"] == "completed")
+    return active, cleared
+
+
 def window_state(name: str):
     cfg = WINDOWS[name]
     delta = timedelta(hours=cfg.get("hours", 0), days=cfg.get("days", 0))
@@ -468,7 +480,8 @@ def cmd_stats(args):
             out[f"{name}_pct"] = windows_out[name]["remaining_pct"]
         print(json.dumps(out, indent=2))
         return
-    print("⚔️  Adventurer's Stats\n")
+    print("⚔️  Your Adventurer's Stats")
+    print("📍 You pause at a Waypoint to take stock of your own tracks.\n")
     print(f"   {'XP:':<12}{xp}")
     print(f"   {'Rep:':<12}{completed}")
     print(f"   {'Quests:':<12}{active_count} active")
@@ -486,47 +499,77 @@ def cmd_stats(args):
             print(f"               ({cfg['blurb']})")
 
 
-# ========== hub ==========
+# ========== map / waypoints ==========
 
-def cmd_hub_list(args):
+def cmd_map(args):
     hs = hubs()
+    qs = quests()
     if args.format == "json":
-        print(json.dumps(hs, indent=2))
+        out = []
+        for h in hs:
+            active, cleared = hub_counts(h["id"], qs)
+            out.append({**h,
+                        "state": "lit" if active else "dormant",
+                        "active_count": active,
+                        "cleared_count": cleared})
+        print(json.dumps(out, indent=2))
         return
     if not hs:
-        print("\U0001F5FA  No hubs yet. They appear when Claude assigns the first quest.")
+        print("\U0001F5FA  No Waypoints yet. They appear when Claude assigns the first quest.")
         return
-    qs = quests()
-    print("\U0001F5FA  Quest hubs:\n")
+
+    lit, dormant = [], []
     for h in hs:
-        active = sum(1 for q in qs if q.get("hub_id") == h["id"] and q["status"] == "active")
-        print(f"  {h['name']}   ({h['id']})")
-        s_plural = "s" if active != 1 else ""
-        print(f"     {active} active quest{s_plural}  ·  last visited {h.get('last_visited', '?')}")
+        active, cleared = hub_counts(h["id"], qs)
+        (lit if active else dormant).append((h, active, cleared))
+
+    print("\U0001F5FA  Your map:\n")
+    if lit:
+        print("  Active hubs (giving quests):")
+        for h, active, cleared in lit:
+            s = "s" if active != 1 else ""
+            print(f"    ● {h['name']}   ({h['id']})")
+            print(f"        {active} active quest{s}  ·  last visited {h.get('last_visited', '?')}")
         print()
-    print("  Rename: `waypoint hub rename <id> <new-name>`  ·  Visit: `waypoint hub visit <id>`")
-    print("  Torch:  `waypoint hub torch <id>`  (deletes active quests + hub; settled history preserved)")
+    if dormant:
+        print("  Dormant Waypoints (cleared — travel back to add quests):")
+        for h, active, cleared in dormant:
+            s = "s" if cleared != 1 else ""
+            print(f"    ○ {h['name']}   ({h['id']})")
+            print(f"        {cleared} quest{s} cleared  ·  last visited {h.get('last_visited', '?')}")
+        print()
+    print("  Rename: `waypoint rename <id> <new-name>`  ·  Visit: `waypoint visit <id>`")
+    print("  Torch:  `waypoint torch <id>`  (forget a Waypoint for good)")
 
 
-def cmd_hub_rename(args):
+def cmd_rename(args):
     hs = hubs()
     for h in hs:
         if h["id"] == args.id or h["id"].startswith(args.id):
             old = h["name"]
             h["name"] = args.name
             save(HUBS_FILE, hs)
-            print(f"Renamed hub '{old}' → '{args.name}'.")
+            print(f"Renamed Waypoint '{old}' → '{args.name}'.")
             return
-    print(f"No hub found matching '{args.id}'.", file=sys.stderr)
+    print(f"No Waypoint found matching '{args.id}'.", file=sys.stderr)
     sys.exit(1)
 
 
-def cmd_hub_visit(args):
+def cmd_visit(args):
     h = ensure_hub(args.id, args.name or "")
+    active, cleared = hub_counts(h["id"], quests())
     print(f"\U0001F4CD Arrived at {h['name']} ({h['id']}).")
+    if active:
+        s = "s" if active != 1 else ""
+        print(f"   {active} active quest{s} waiting here.")
+    elif cleared:
+        s = "s" if cleared != 1 else ""
+        print(f"   Dormant Waypoint · {cleared} quest{s} cleared here. Assign a new one to relight it.")
+    else:
+        print("   Newly discovered · no quests yet.")
 
 
-def cmd_hub_torch(args):
+def cmd_torch(args):
     hs = hubs()
     matches = [h for h in hs if h["id"] == args.id or h["id"].startswith(args.id)]
     if not matches:
@@ -545,11 +588,11 @@ def cmd_hub_torch(args):
     settled = [q for q in in_hub if q["status"] != "active"]
 
     if not args.yes:
-        print(f"\U0001F525 About to torch hub '{hub['name']}' ({hub['id']}):")
+        print(f"\U0001F525 About to torch Waypoint '{hub['name']}' ({hub['id']}):")
         print(f"   {len(active)} active quest(s) → deleted")
         if settled:
             print(f"   {len(settled)} settled quest record(s) (completed/abandoned) → preserved, orphaned")
-        print(f"   Hub entry → removed")
+        print(f"   Waypoint → removed from the map")
         print(f"   Rep / XP counter → unaffected")
         try:
             ans = input("Continue? [y/N] ").strip().lower()
@@ -564,11 +607,11 @@ def cmd_hub_torch(args):
     hs_after = [h for h in hs if h["id"] != hub["id"]]
     save(HUBS_FILE, hs_after)
 
-    print(f"\U0001F525 Torched hub '{hub['name']}'.")
+    print(f"\U0001F525 Torched Waypoint '{hub['name']}'.")
     print(f"   Deleted: {len(active)} active quest(s)")
     if settled:
         print(f"   Preserved: {len(settled)} historical record(s) (orphaned; visible in `quest list --status all`)")
-    print(f"   Hub entry removed.")
+    print(f"   Waypoint removed from the map.")
 
 
 # ========== energy ticks (called by Stop hook) ==========
@@ -695,27 +738,28 @@ def build_parser():
     ed.add_argument("--format", choices=["text", "json"], default="text")
     ed.set_defaults(func=cmd_quest_edit)
 
-    st = sub.add_parser("stats", help="Show XP, Rep, Turf, Vice")
+    st = sub.add_parser("stats", help="Take stock of your own tracks (XP, Rep, Turf, Vice) — as if pausing in town at a Waypoint")
     st.add_argument("--format", choices=["text", "json"], default="text")
     st.set_defaults(func=cmd_stats)
 
-    h = sub.add_parser("hub", help="Hub operations")
-    hsub = h.add_subparsers(dest="subcmd", required=True)
-    hl = hsub.add_parser("list", help="List hubs")
-    hl.add_argument("--format", choices=["text", "json"], default="text")
-    hl.set_defaults(func=cmd_hub_list)
-    hr = hsub.add_parser("rename", help="Rename a hub")
-    hr.add_argument("id")
-    hr.add_argument("name")
-    hr.set_defaults(func=cmd_hub_rename)
-    hv = hsub.add_parser("visit", help="Mark arrival at a hub")
-    hv.add_argument("id")
-    hv.add_argument("--name", default="")
-    hv.set_defaults(func=cmd_hub_visit)
-    ht = hsub.add_parser("torch", help="Torch a hub: delete active quests, orphan settled history, remove hub")
-    ht.add_argument("id")
-    ht.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
-    ht.set_defaults(func=cmd_hub_torch)
+    mp = sub.add_parser("map", help="List your Waypoints (lit hubs + dormant)")
+    mp.add_argument("--format", choices=["text", "json"], default="text")
+    mp.set_defaults(func=cmd_map)
+
+    rn = sub.add_parser("rename", help="Rename a Waypoint")
+    rn.add_argument("id")
+    rn.add_argument("name")
+    rn.set_defaults(func=cmd_rename)
+
+    vis = sub.add_parser("visit", help="Travel to a Waypoint")
+    vis.add_argument("id")
+    vis.add_argument("--name", default="")
+    vis.set_defaults(func=cmd_visit)
+
+    tch = sub.add_parser("torch", help="Torch a Waypoint: delete its active quests, orphan settled history, remove it from the map")
+    tch.add_argument("id")
+    tch.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    tch.set_defaults(func=cmd_torch)
 
     tk = sub.add_parser("tick", help="Tick all energy meters (called by Stop hook)")
     tk.add_argument("--format", choices=["text", "json"], default="text")
