@@ -1,5 +1,5 @@
 ---
-description: BEFORE writing any output that directs the user to do something off-screen — inline prose ("you should look up X", "go check Y", "call Z", "you'll need to email...") OR imperative items in a structured plan ("## Next steps" sections, "**Pick contacts to forward to**" bullets, numbered "This week:" lists) — STOP and log it as a quest via `waypoint quest add`. One quest per actionable item, not one per response: a 10-bullet next-steps section is 10 `quest add` calls before you write it. Deliverable wrap-ups are where this is easiest to forget — fight harder there. Log automatically; never ask "want me to log this?" — the user opted in by installing the plugin. TRIGGER on phone calls, lookups, schedule/calendar actions, errands, web searches, readings, reach-outs, decisions requiring outside info — whether the surface form is a sentence, a bullet, or a section header.
+description: BEFORE writing any output that directs the user to do something off-screen — inline prose ("you should look up X", "go check Y", "call Z", "you'll need to email...") OR imperative items in a structured plan ("## Next steps" sections, "**Pick contacts to forward to**" bullets, numbered "This week:" lists) — STOP and log it as a quest via `waypoint quest add` — always pass `--friction` (trivial / minor / moderate / major / epic), matching any tier the user signals, since it silently defaults to minor otherwise. One quest per actionable item, not one per response: a 10-bullet next-steps section is 10 `quest add` calls before you write it. Deliverable wrap-ups are where this is easiest to forget — fight harder there. Log automatically; never ask "want me to log this?" — the user opted in by installing the plugin. TRIGGER on phone calls, lookups, schedule/calendar actions, errands, web searches, readings, reach-outs, decisions requiring outside info — whether the surface form is a sentence, a bullet, or a section header.
 allowed-tools: Bash(waypoint quest add *)
 ---
 
@@ -27,7 +27,7 @@ Pick by *real-world cost* to the user, not technical complexity:
 
 **User signals override your estimate.** If the user names a tier in their message ("this is trivial", "quick lookup", "huge ordeal", "this is an epic") or otherwise telegraphs effort, match it — don't second-guess. The "err high" rule only kicks in when the user *hasn't* signaled.
 
-When unsure, err high. XP is a consolation prize for off-screen work; over-rewarding trivial tasks dilutes the meter.
+When unsure, err high. XP is a consolation prize for off-screen work; over-rewarding trivial tasks dilutes the meter. The CLI warns and falls back to `minor` if you omit `--friction`, so always set it explicitly.
 
 If you got the tier wrong, the user can recalibrate with `waypoint quest edit <id> --friction <tier>` (or `--xp <n>` to override the reward directly) — including after completion.
 

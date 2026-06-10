@@ -289,6 +289,13 @@ def cmd_quest_add(args):
     qs = quests()
     hub = ensure_hub(args.hub or "h-default", args.hub_name or "")
     friction = args.friction
+    if friction is None:
+        friction = "minor"
+        print(
+            "⚠️  no --friction given — defaulted to 'minor'. "
+            "Pass --friction trivial|minor|moderate|major|epic to set the tier.",
+            file=sys.stderr,
+        )
     xp = FRICTION_XP[friction]
     q = {
         "id": f"q-{short_id()}",
@@ -709,7 +716,8 @@ def build_parser():
     add.add_argument("--details", default="")
     add.add_argument("--hub", default="h-default")
     add.add_argument("--hub-name", default="")
-    add.add_argument("--friction", choices=list(FRICTION_XP.keys()), default="minor")
+    add.add_argument("--friction", choices=list(FRICTION_XP.keys()), default=None,
+                     help="Friction tier; if omitted, defaults to 'minor' and warns")
     add.add_argument("--format", choices=["text", "json"], default="text")
     add.set_defaults(func=cmd_quest_add)
 
